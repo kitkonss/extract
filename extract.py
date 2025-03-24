@@ -59,7 +59,7 @@ def extract_data_from_image(api_key, image_data, prompt_text):
         return f"เกิดข้อผิดพลาด: {response.status_code} - {response.text}"
 
 # สร้าง UI ด้วย Streamlit
-st.title("ระบบสกัดข้อมูลจากรูปภาพด้วย Gemini API")
+st.title("ระบบสกัดข้อมูลจากรูปภาพโดยคนเหล่ท่อ")
 
 # รับ API key
 #api_key = st.text_input("API Key ของ Google Gemini (จำเป็น)", type="password")
