@@ -31,7 +31,7 @@ def extract_data_from_image(api_key, image_data, prompt_text):
         ],
         "generation_config": {
             "temperature": 0.2,
-            "top_p": 0.8,
+            "top_p": 0.85,
             "max_output_tokens": 3333
         }
     }
