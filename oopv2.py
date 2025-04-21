@@ -24,7 +24,7 @@ st.title('⚡ Transformer OCR → POWTR‑CODE → MxLoader (.xlsm)')
 pam_xls = st.file_uploader('📒 PAM.xlsx', ['xlsx','xls'])
 imgs    = st.file_uploader('🖼️ Nameplate images', ['jpg','jpeg','png'],
                            accept_multiple_files=True)
-api_key = os.getenv('GEMINI_API_KEY') or api_key = value="AIzaSyDb8iBV1EWqLvjheG_44gh3vQHfpmYGOCI"
+api_key = value="AIzaSyDb8iBV1EWqLvjheG_44gh3vQHfpmYGOCI"
 
 if pam_xls is not None:
     pam_df  = pd.read_excel(pam_xls)
