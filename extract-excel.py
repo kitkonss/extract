@@ -1,239 +1,154 @@
-# --------------------  extract-excel.py  (FULL FILE – 28 Apr 2025)  --------------------
+# -------------------  extract-excel.py  (FULL – 29 Apr 2025)  -------------------
 import os, base64, json, re, io, imghdr, requests, pandas as pd, streamlit as st
 from PIL import Image
 
-# --------------------------------------------------------------------------- #
-# 1)  Utilities                                                               #
-# --------------------------------------------------------------------------- #
-def encode_image(file) -> tuple[str, str]:
-    raw = file.getvalue()
-    kind = imghdr.what(None, raw) or 'jpeg'
-    mime = f"image/{'jpg' if kind == 'jpeg' else kind}"
-    return base64.b64encode(raw).decode('utf-8'), mime
-
+# -------------------------------------------------------------------- #
+# 1)  Utilities                                                        #
+# -------------------------------------------------------------------- #
+def encode_image(f):                     # -> (b64, mime)
+    raw = f.getvalue();  kind = imghdr.what(None, raw) or 'jpeg'
+    return base64.b64encode(raw).decode(), f"image/{'jpg' if kind=='jpeg' else kind}"
 
 def _kv_from_text(txt: str) -> float | None:
-    """
-    Pick the largest *system‑voltage* (kV) from txt.
-    Reject chunks with kVA / VA / kA / A, BIL / IMPULSE, or >1500 kV.
-    """
+    """Return highest kV in text (skip kVA/VA/kA/A, BIL, >1 500 kV)."""
     best = None
-    txt_u = txt.upper()
-    for chunk in re.split(r'[\/,;\n]', txt_u):
-        chunk = chunk.strip()
-        if re.search(r'\bK?VA\b|\bKA\b|\b[A-Z]?AMP\b|\b[A-Z]?A\b', chunk):
+    for chunk in re.split(r'[\/,;\n]', txt.upper()):
+        if re.search(r'K?VA\b|KA\b|AMP\b|\b[A-Z]?A\b', chunk):   # skip kVA, A
             continue
         if 'BIL' in chunk or 'IMPULSE' in chunk:
             continue
         for m in re.finditer(r'(\d+(?:\.\d+)?)\s*([K]?V)(?![A-Z])', chunk):
-            val = float(m.group(1))
-            kv = val if m.group(2).upper() == 'KV' else val / 1000
-            if kv > 1500:
-                continue
+            kv = float(m.group(1)) if m.group(2) == 'KV' else float(m.group(1))/1000
+            if kv > 1500:  continue
             best = kv if best is None else max(best, kv)
     return best
 
+def fallback_voltage_scan(raw_text: str) -> str | None:
+    """
+    Scan Gemini raw response (string) for the first sensible HV voltage line.
+    Accept patterns like 'HV 21000 V', 'PRI. VOLT 22000 V'.
+    """
+    for line in raw_text.upper().splitlines():
+        if re.search(r'\b(HV|PRI|PRIMARY|HIGH)\b.*\d', line):
+            m = re.search(r'(\d+(?:\.\d+)?)\s*([K]?V)(?![A-Z])', line)
+            if m and 'KVA' not in line:
+                return f"{m.group(1)} {m.group(2)}"
+    return None
 
-def clean_voltage_fields(data: dict) -> dict:
-    """
-    Ensure voltage‑related attributes contain only lines with V / kV.
-    If value contains kVA or no ‘V’, try to replace with the first V/kV line,
-    else set to '-'.
-    """
-    v_keys = [k for k in data.keys() if re.search(r'VOLT|HV|LV|RATED', k, re.I)]
-    for k in v_keys:
-        txt = str(data[k])
-        # already OK?
-        if re.search(r'\b\d', txt) and re.search(r'\b[Vv]\b|KV', txt) and 'KVA' not in txt.upper():
-            continue
-        # attempt to find proper V/kV substring
-        found = re.search(r'(\d[\d\.\s]*[K]?V\b)', txt.upper())
-        if found and 'KVA' not in found.group(1):
-            data[k] = found.group(1).replace(' ', '')
-        else:
-            data[k] = '-'
+def clean_voltage_fields(data, raw_text):
+    """Replace '-' voltage values by fallback scan (if available)."""
+    for k in list(data.keys()):
+        if re.search(r'VOLT|HV|LV|PRI|SEC', k, re.I) and (data[k] in {'-', '', None}):
+            fb = fallback_voltage_scan(raw_text)
+            if fb:  data[k] = fb
     return data
 
-
-# --------------------------------------------------------------------------- #
-# 2)  Prompt generator                                                        #
-# --------------------------------------------------------------------------- #
+# -------------------------------------------------------------------- #
+# 2)  Prompt generator                                                 #
+# -------------------------------------------------------------------- #
 def generate_prompt_from_excel(excel_file):
-    """
-    Build a Gemini prompt from an attribute list.
-    Extra instruction: **For all voltage‑related fields, capture ONLY the line
-    that contains a value followed by V/kV (ignore kVA/kA/A).**
-    """
-    try:
-        df = pd.read_excel(excel_file)
-        if isinstance(df.columns[0], (int, float)):
-            excel_file.seek(0)
-            df = pd.read_excel(excel_file, header=None)
-            df.columns = ['attribute_name'] + [f'col_{i}' for i in range(1, len(df.columns))]
-            st.info("ไฟล์ไม่มี header – ปรับเรียบร้อย")
-    except Exception:
-        excel_file.seek(0)
-        df = pd.read_excel(excel_file, header=None)
-        df.columns = ['attribute_name'] + [f'col_{i}' for i in range(1, len(df.columns))]
-        st.warning("อ่าน header ไม่ได้ – ใช้โหมดไม่มี header")
-
+    df = pd.read_excel(excel_file)
+    if isinstance(df.columns[0], (int,float)):
+        excel_file.seek(0); df = pd.read_excel(excel_file, header=None)
+        df.columns = ['attribute_name'] + [f'col_{i}' for i in range(1,len(df.columns))]
     attr_col = 'attribute_name' if 'attribute_name' in df.columns else df.columns[0]
-    unit_col = None
-    for c in df.columns:
-        if re.fullmatch(r'(unit(_of_measure)?|uom)', str(c), re.I):
-            unit_col = c; break
+    unit_col = next((c for c in df.columns if re.fullmatch(r'(unit|uom)', str(c), re.I)), None)
 
-    prompt = ["""กรุณาสกัดข้อมูลทั้งหมดจากรูปภาพนี้และแสดงผลเป็น JSON (key ภาษาอังกฤษ, value ตามที่พบ)
-- **ห้าม** ใส่ index
-- **Voltage‑related fields** (HV/LV Rated Voltage, Voltage Level ฯลฯ)  
-  → ให้เลือกเฉพาะบรรทัดที่มีหน่วย *V* หรือ *kV* (ห้าม kVA / kA / A)
-- หากไม่พบข้อมูล ให้ใส่ "-" 
-รายการ attributes มีดังนี้:\n"""]
-
-    for i, row in df.iterrows():
-        a = str(row[attr_col]).strip()
-        if not a or pd.isna(a):
-            continue
-        if unit_col and pd.notna(row.get(unit_col, '')):
-            prompt.append(f"{i+1}: {a} [{row[unit_col]}]")
-        else:
-            prompt.append(f"{i+1}: {a}")
-    prompt.append("\nจงตอบกลับเฉพาะ JSON object")
+    prompt = ["""Extract **JSON** with these attributes (English keys only).  
+For *voltage‑related* fields (HV/LV Rated Voltage, Primary Voltage, Voltage Level, etc.)  
+→ pick the line that shows a number followed by **V** or **kV** — ignore kVA/kA/A.  
+If not found, return "-"."""]
+    for i,row in df.iterrows():
+        a=str(row[attr_col]).strip();  u=row.get(unit_col,'')
+        if a and not pd.isna(a):
+            prompt.append(f"{i+1}: {a}" + (f" [{u}]" if u and not pd.isna(u) else ""))
+    prompt.append("Respond **only** with a JSON object.")
     return '\n'.join(prompt)
 
-
-# --------------------------------------------------------------------------- #
-# 3)  Gemini call                                                             #
-# --------------------------------------------------------------------------- #
-def extract_data_from_image(api_key, img_b64, mime, prompt):
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={api_key}"
-    body = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inlineData": {"mimeType": mime, "data": img_b64}}
-            ]
-        }],
-        "generationConfig": {"temperature": 0.2, "topP": 0.85, "maxOutputTokens": 9000}
-    }
-    r = requests.post(url, headers={"Content-Type": "application/json"}, data=json.dumps(body))
+# -------------------------------------------------------------------- #
+# 3)  Gemini API                                                       #
+# -------------------------------------------------------------------- #
+def gemini(api_key,b64,mime,prompt):
+    url=f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={api_key}"
+    body={"contents":[{"parts":[{"text":prompt},
+                                {"inlineData":{"mimeType":mime,"data":b64}}]}],
+          "generationConfig":{"temperature":0.2,"topP":0.85,"maxOutputTokens":9000}}
+    r=requests.post(url,headers={"Content-Type":"application/json"},data=json.dumps(body))
     if r.ok and r.json().get('candidates'):
         return r.json()['candidates'][0]['content']['parts'][0]['text']
     return f"API ERROR {r.status_code}: {r.text}"
 
+# -------------------------------------------------------------------- #
+# 4)  POWTR‑CODE                                                       #
+# -------------------------------------------------------------------- #
+def make_powtr(d):
+    phase='1' if any(re.search(r'1PH|1-PH|SINGLE',str(v),re.I) for v in d.values()) else '3'
+    v_max=max((_kv_from_text(str(v)) or -1) for k,v in d.items()
+              if re.search(r'VOLT|HV|LV|PRI|SEC',k,re.I))
+    if v_max==-1: v_char='-'
+    elif v_max>765: return 'POWTR-3-OO'
+    elif v_max>=345: v_char='E'
+    elif v_max>=100: v_char='H'
+    elif v_max>=1  : v_char='M'
+    else:            v_char='L'
+    t_char='D' if any('DRY' in str(v).upper() for v in d.values()) else \
+            ('O' if any('OIL' in str(v).upper() for v in d.values()) else '-')
+    tap='O' if any(re.search(r'ON[- ]?LOAD|OLTC',str(v),re.I) for v in d.values()) else 'F'
+    return f"POWTR-{phase}{v_char}{t_char}{tap}"
 
-# --------------------------------------------------------------------------- #
-# 4)  POWTR‑CODE generator                                                    #
-# --------------------------------------------------------------------------- #
-def generate_powtr_code(extracted: dict) -> str:
-    try:
-        phase = '1' if any(re.search(r'1PH|1-PH|SINGLE', str(v), re.I)
-                           for v in extracted.values()) else '3'
+# -------------------------------------------------------------------- #
+# 5)  Streamlit UI                                                     #
+# -------------------------------------------------------------------- #
+st.title("Transformer Nameplate Extractor + POWTR‑Code (29 Apr 2025)")
 
-        high_kv = None
-        for k, v in extracted.items():
-            if re.search(r'VOLT|HV|LV|RATED', k, re.I):
-                kv = _kv_from_text(str(v))
-                if kv is not None:
-                    high_kv = kv if high_kv is None else max(high_kv, kv)
-
-        if high_kv is None:
-            v_char = '-'
-        elif high_kv > 765:
-            return 'POWTR-3-OO'
-        elif high_kv >= 345:
-            v_char = 'E'
-        elif high_kv >= 100:
-            v_char = 'H'
-        elif high_kv >= 1:
-            v_char = 'M'
-        else:
-            v_char = 'L'
-
-        t_char = '-'
-        for v in extracted.values():
-            s = str(v).upper()
-            if 'DRY' in s:
-                t_char = 'D'; break
-            if 'OIL' in s:
-                t_char = 'O'
-
-        tap = 'O' if any(re.search(r'ON[-\s]?LOAD|OLTC', str(v), re.I)
-                         for v in extracted.values()) else 'F'
-        return f'POWTR-{phase}{v_char}{t_char}{tap}'
-    except Exception:
-        return 'ไม่สามารถระบุได้'
-
-
-# --------------------------------------------------------------------------- #
-# 5)  Streamlit UI                                                            #
-# --------------------------------------------------------------------------- #
-st.title("Extractor & POWTR‑CODE (v 28 Apr 2025)")
-
-API_KEY = "AIzaSyDb8iBV1EWqLvjheG_44gh3vQHfpmYGOCI"
-
-tab1, tab2 = st.tabs(["ใช้ไฟล์ Excel", "ใช้ attributes ที่กำหนดไว้แล้ว"])
+API="AIzaSyDb8iBV1EWqLvjheG_44gh3vQHfpmYGOCI"
+tab1,tab2=st.tabs(["ใช้ไฟล์ Excel","ใช้ attribute สำเร็จรูป"])
 with tab1:
-    excel_up = st.file_uploader("Excel attributes", ["xlsx", "xls"])
-    if excel_up:
-        st.dataframe(pd.read_excel(excel_up).head())
+    excel=st.file_uploader("Excel attributes",["xlsx","xls"])
+    if excel: st.dataframe(pd.read_excel(excel).head())
 with tab2:
-    use_default = st.checkbox("ใช้ attributes ที่กำหนดไว้แล้ว", True)
-    if use_default:
-        default_prompt = """กรุณาสกัดข้อมูลทั้งหมดจากรูปภาพนี้และแสดงผลเป็น JSON ..."""
+    prompt_default="""Extract JSON with keys: MANUFACTURER, MODEL, SERIAL_NO, STANDARD,
+CAPACITY [kVA], HV_RATED_VOLTAGE [V], LV_RATED_VOLTAGE [V],
+HV_RATED_CURRENT [A], LV_RATED_CURRENT [A], IMPEDANCE_VOLTAGE [%],
+VECTOR_GROUP"""
 
-images = st.file_uploader("อัปโหลดรูปภาพ", ["jpg", "png", "jpeg"],
-                          accept_multiple_files=True)
+imgs=st.file_uploader("อัปโหลดรูปภาพ",["jpg","png","jpeg"],accept_multiple_files=True)
 
-if st.button("ประมวลผล") and API_KEY and images:
-    prompt = default_prompt
-    if excel_up:
-        prompt = generate_prompt_from_excel(excel_up)
+if st.button("ประมวลผล") and imgs:
+    prompt = prompt_default if not excel else generate_prompt_from_excel(excel)
     st.expander("Prompt").write(prompt)
+    out=[]
+    bar,stat=st.progress(0),st.empty()
 
-    res, bar, stat = [], st.progress(0), st.empty()
-    for i, f in enumerate(images, 1):
-        bar.progress(i/len(images))
-        stat.write(f"กำลังประมวลผล {i}/{len(images)} – {f.name}")
-        b64, mime = encode_image(f)
-        raw = extract_data_from_image(API_KEY, b64, mime, prompt)
+    for i,f in enumerate(imgs,1):
+        bar.progress(i/len(imgs));  stat.write(f"กำลังประมวลผล {f.name}")
+        b64,mime=encode_image(f);   raw=gemini(API,b64,mime,prompt)
 
-        try:
-            data = json.loads(raw[raw.find('{'): raw.rfind('}')+1])
-        except Exception:
-            data = {"error": raw}
+        try: data=json.loads(raw[raw.find('{'):raw.rfind('}')+1])
+        except Exception: data={"raw_text":raw}
 
-        if 'error' not in data and 'raw_text' not in data:
-            data = clean_voltage_fields(data)
-        res.append({"file": f.name, "extracted_data": data})
+        if 'raw_text' in data:
+            data=clean_voltage_fields(data, data['raw_text'])
+        else:
+            data=clean_voltage_fields(data, raw)
 
-    # add POWTR codes
-    for r in res:
-        if isinstance(r['extracted_data'], dict) and 'error' not in r['extracted_data']:
-            r['extracted_data']['POWTR_CODE'] = generate_powtr_code(r['extracted_data'])
+        if 'POWTR_CODE' not in data:
+            data['POWTR_CODE']=make_powtr(data)
+        out.append({"file":f.name,"data":data})
 
     st.subheader("POWTR‑CODE")
-    for r in res:
-        st.write(r['extracted_data'].get('POWTR_CODE', '—'))
+    for r in out: st.write(r['data']['POWTR_CODE'])
 
-    rows = []
-    for r in res:
-        d = r['extracted_data']
-        code = d.get('POWTR_CODE', '')
-        if 'error' in d:
-            rows.append({"POWTR_CODE": code, "ATTRIBUTE": "Error", "VALUE": d['error']})
-        else:
-            for k, v in d.items():
-                if k != 'POWTR_CODE':
-                    rows.append({"POWTR_CODE": code, "ATTRIBUTE": k, "VALUE": v})
-    df = pd.DataFrame(rows)
-    st.subheader("ผลลัพธ์แบบแถว")
-    st.dataframe(df)
+    rows=[]
+    for r in out:
+        d=r['data']; code=d['POWTR_CODE']
+        for k,v in d.items():
+            if k!='POWTR_CODE': rows.append({"POWTR_CODE":code,"ATTRIBUTE":k,"VALUE":v})
+    df=pd.DataFrame(rows); st.dataframe(df)
 
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine='openpyxl') as w:
-        df.to_excel(w, index=False)
+    buf=io.BytesIO()
+    with pd.ExcelWriter(buf,engine='openpyxl') as w: df.to_excel(w,index=False)
     buf.seek(0)
-    st.download_button("ดาวน์โหลด Excel", buf, "extracted_data_sorted.xlsx",
+    st.download_button("ดาวน์โหลด Excel",buf,"extracted_data_sorted.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-# --------------------------------------------------------------------------- #
+# -------------------------------------------------------------------- #
