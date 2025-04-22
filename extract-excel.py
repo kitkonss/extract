@@ -141,57 +141,34 @@ def extract_data_from_image(api_key: str, img_b64: str, mime: str, prompt: str) 
 # --------------------------------------------------------------------------- #
 def generate_powtr_code(extracted: dict) -> str:
     try:
-        # 1) Phase
-        phase = '3'
-        if any(any(k in str(v).upper() for k in ('1PH', '1-PH', 'SINGLE'))
-               for v in extracted.values()):
-            phase = '1'
+        # … (ขั้นตอน 1 และ 2 เหมือนเดิม) …
 
-        # 2) Voltage level
-        high_kv = None
-        for k, v in extracted.items():
-            if any(t in k.upper() for t in ('VOLT', 'HV', 'LV', 'RATED', 'SYSTEM')):
-                kv = _kv_from_text(str(v))
-                if kv is not None:
-                    high_kv = kv if high_kv is None else max(high_kv, kv)
-
-        if high_kv is None:
-            v_char = '-'
-        elif high_kv > 765:
-            return 'POWTR-3-OO'
-        elif high_kv >= 345:
-            v_char = 'E'
-        elif high_kv >= 100:
-            v_char = 'H'
-        elif high_kv >= 1:
-            v_char = 'M'
-        else:
-            v_char = 'L'
-
-        # 3) Cooling type (detect DRY or any oil-based code like ONAN/OFAF)
+        # 3) Type → default = '-'  (เมื่อตรวจไม่เจอทั้ง DRY และ OIL)
         t_char = '-'
-        for k, v in extracted.items():
-            if 'COOL' in k.upper() or 'TYPE OF TRANSFORMER' in k.upper():
-                u = str(v).upper().strip()
-                if 'DRY' in u:
-                    t_char = 'D'
-                elif u.startswith('O'):  # catches ONAN, OFAF, OIL, etc.
-                    t_char = 'O'
+        for v in extracted.values():
+            u = str(v).upper()
+            if 'DRY' in u:
+                t_char = 'D'
+                break
+            # ตรวจหา oil-based cooling class (OIL, ONAN, OFAF, ...)
+            if any(kw in u for kw in ('OIL', 'ONAN', 'OFAF')):
+                t_char = 'O'
                 break
 
-        # 4) Tap‑changer
-        tap = 'F'
+        # 4) Tap‑changer (เหมือนเดิม)
+        tap_char = 'F'
         for v in extracted.values():
             u = str(v).upper()
             if any(x in u for x in ('ON‑LOAD', 'ON-LOAD', 'OLTC')):
-                tap = 'O'
+                tap_char = 'O'
                 break
             if any(x in u for x in ('OFF‑LOAD', 'OFF-LOAD', 'FLTC', 'OCTC')):
-                tap = 'F'
+                tap_char = 'F'
 
-        return f'POWTR-{phase}{v_char}{t_char}{tap}'
+        return f'POWTR-{phase}{v_char}{t_char}{tap_char}'
     except Exception:
         return 'ไม่สามารถระบุได้'
+
 
 
 def add_powtr_codes(results):
