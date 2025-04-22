@@ -18,7 +18,7 @@ if not ATTR.exists():
 st.title('⚡ Transformer OCR ▸ POWTR‑CODE ▸ MxLoader')
 pam_xls = st.file_uploader('📒 PAM.xlsx', ['xlsx','xls'])
 imgs    = st.file_uploader('🖼️ Images', ['jpg','jpeg','png'], accept_multiple_files=True)
-api_key = os.getenv('GEMINI_API_KEY') or st.text_input('API key', type='password')
+api_key = "AIzaSyDb8iBV1EWqLvjheG_44gh3vQHfpmYGOCI"
 
 if pam_xls is not None:
     pam_df = pd.read_excel(pam_xls)
