@@ -183,6 +183,7 @@ def generate_powtr_code(extracted_data):
         voltage_char = "-"  # default เป็น "-"
         high_voltage = extracted_data.get("HIGH SIDE NOMINAL SYSTEM VOLTAGE (KV) [kV]", "")
         high_side = extracted_data.get("HIGH SIDE NOMINAL SYSTEM VOLTAGE (KV) [kV]", "")
+        high_level = extracted_data.get("VOLTAGE LEVEL [kV]", "")
         
         if isinstance(high_voltage, str):
             import re
@@ -190,9 +191,9 @@ def generate_powtr_code(extracted_data):
             if voltage_value:
                 voltage = float(voltage_value[0])
                 
-                if "kV" in high_voltage or "kV" in high_side:
+                if "kV" in high_voltage or "kV" in high_side or "kV" in high_level:
                     pass
-                elif "V" in high_voltage or "V" in high_side:
+                elif "V" in high_voltage or "V" in high_side or "V" in high_level:
                     voltage = voltage / 1000
                 
                 if voltage >= 345:
