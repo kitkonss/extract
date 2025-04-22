@@ -141,7 +141,32 @@ def extract_data_from_image(api_key: str, img_b64: str, mime: str, prompt: str) 
 # --------------------------------------------------------------------------- #
 def generate_powtr_code(extracted: dict) -> str:
     try:
-        # … (ขั้นตอน 1 และ 2 เหมือนเดิม) …
+# 1) Phase
+        phase = '3'
+        if any(any(k in str(v).upper() for k in ('1PH', '1-PH', 'SINGLE'))
+               for v in extracted.values()):
+            phase = '1'
+
+        # 2) Voltage level
+        high_kv = None
+        for k, v in extracted.items():
+            if any(t in k.upper() for t in ('VOLT', 'HV', 'LV', 'RATED', 'SYSTEM')):
+                kv = _kv_from_text(str(v))
+                if kv is not None:
+                    high_kv = kv if high_kv is None else max(high_kv, kv)
+
+        if high_kv is None:
+            v_char = '-'
+        elif high_kv > 765:
+            return 'POWTR-3-OO'
+        elif high_kv >= 345:
+            v_char = 'E'
+        elif high_kv >= 100:
+            v_char = 'H'
+        elif high_kv >= 1:
+            v_char = 'M'
+        else:
+            v_char = 'L'
 
         # 3) Type → default = '-'  (เมื่อตรวจไม่เจอทั้ง DRY และ OIL)
         t_char = '-'
