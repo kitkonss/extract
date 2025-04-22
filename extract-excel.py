@@ -9,7 +9,7 @@ def encode_image(file) -> tuple[str, str]:
     """Convert an uploaded image file to (base64‑string, mime‑type) for Gemini."""
     raw = file.getvalue()
     kind = imghdr.what(None, raw) or 'jpeg'
-    mime = f"image/{'jpg' if kind == 'jpeg' else kind}"
+    mime = f"image/{kind}"
     return base64.b64encode(raw).decode('utf-8'), mime
 
 
