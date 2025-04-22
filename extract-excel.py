@@ -99,7 +99,7 @@ def generate_prompt_from_excel(excel_file):
             st.info(f"ตรวจพบคอลัมน์ '{potential}' อาจเป็นหน่วยวัด")
 
     prompt_parts = ["""กรุณาสกัดข้อมูลทั้งหมดจากรูปภาพนี้และแสดงผลในรูปแบบ JSON ที่มีโครงสร้างชัดเจน โดยใช้ key เป็นภาษาอังกฤษและ value เป็นข้อมูลที่พบ
-ให้ return ค่า attributes กลับด้วยค่า attribute เท่านั้นห้าม return เป็น index เด็ดขาดและไม่ต้องเอาค่า index มาด้วย ให้ระวังเรื่อง voltage high side หน่วยต้องเป็น V หรือ kV เท่านั้นถ้าหน่วยเป็น kVA นั่นคือค่าอื่นให้ระวังเรื่องนี้ไว้ด้วย
+ให้ return ค่า attributes กลับด้วยค่า attribute เท่านั้นห้าม return เป็น index เด็ดขาดและไม่ต้องเอาค่า index มาด้วย ให้ระวังเรื่อง voltage high side หน่วยต้องเป็น V หรือ kV เท่านั้น
 โดยเอาเฉพาะ attributes ดังต่อไปนี้\n"""]
 
     for i, row in df.iterrows():
