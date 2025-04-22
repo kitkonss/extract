@@ -141,11 +141,13 @@ def extract_data_from_image(api_key: str, img_b64: str, mime: str, prompt: str) 
 # --------------------------------------------------------------------------- #
 def generate_powtr_code(extracted: dict) -> str:
     try:
+        # 1) Phase
         phase = '3'
         if any(any(k in str(v).upper() for k in ('1PH', '1-PH', 'SINGLE'))
                for v in extracted.values()):
             phase = '1'
 
+        # 2) Voltage level
         high_kv = None
         for k, v in extracted.items():
             if any(t in k.upper() for t in ('VOLT', 'HV', 'LV', 'RATED', 'SYSTEM')):
@@ -156,7 +158,7 @@ def generate_powtr_code(extracted: dict) -> str:
         if high_kv is None:
             v_char = '-'
         elif high_kv > 765:
-            return 'POWTR-3-OO'                         # >765 kV rule
+            return 'POWTR-3-OO'
         elif high_kv >= 345:
             v_char = 'E'
         elif high_kv >= 100:
@@ -166,19 +168,24 @@ def generate_powtr_code(extracted: dict) -> str:
         else:
             v_char = 'L'
 
+        # 3) Cooling type (detect DRY or any oil-based code like ONAN/OFAF)
         t_char = '-'
-        for v in extracted.values():
-            u = str(v).upper()
-            if 'DRY' in u:
-                t_char = 'D'; break
-            if 'OIL' in u:
-                t_char = 'O'
+        for k, v in extracted.items():
+            if 'COOL' in k.upper() or 'TYPE OF TRANSFORMER' in k.upper():
+                u = str(v).upper().strip()
+                if 'DRY' in u:
+                    t_char = 'D'
+                elif u.startswith('O'):  # catches ONAN, OFAF, OIL, etc.
+                    t_char = 'O'
+                break
 
+        # 4) Tap‑changer
         tap = 'F'
         for v in extracted.values():
             u = str(v).upper()
             if any(x in u for x in ('ON‑LOAD', 'ON-LOAD', 'OLTC')):
-                tap = 'O'; break
+                tap = 'O'
+                break
             if any(x in u for x in ('OFF‑LOAD', 'OFF-LOAD', 'FLTC', 'OCTC')):
                 tap = 'F'
 
