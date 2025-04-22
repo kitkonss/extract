@@ -50,7 +50,7 @@ prompt, idx_map = build_prompt(ATTR)
 def enc(f): return base64.b64encode(f.getvalue()).decode()
 def ocr(api, b64, pr):
     r=requests.post(
-        f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={api}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key={api}",
         json={"contents":[{"parts":[{"text":pr},
                                     {"inline_data":{"mime_type":"image/jpeg","data":b64}}]}],
               "generation_config":{"temperature":0.2,"max_output_tokens":4096}})
