@@ -176,7 +176,7 @@ def generate_powtr_code(extracted: dict) -> str:
                 t_char = 'D'
                 break
             # ตรวจหา oil-based cooling class (OIL, ONAN, OFAF, ...)
-            if any(kw in u for kw in ('OIL', 'ONAN', 'OFAF')):
+            if any(kw in u for kw in ('OIL', 'ONAN', 'OFAF', 'OA', 'FOA')):
                 t_char = 'O'
                 break
 
