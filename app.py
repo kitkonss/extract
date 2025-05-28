@@ -333,7 +333,7 @@ def process_excel(df: pd.DataFrame) -> pd.DataFrame:
 # 6)  STREAMLIT UI
 # ----------------------------------------------------------------------------
 
-st.set_page_config(page_title="Transformer Extractor", layout="wide")
+st.set_page_config(page_title="Transformer Extractor")
 st.header("🔎 สกัดข้อมูลจากรูปภาพ")
 
 
