@@ -1,8 +1,3 @@
-# --------------------  app.py (v2 – full, self‑contained ~500 lines) --------------------
-# Streamlit web‑app for extracting transformer name‑plate data from images via Gemini,
-# validating / generating POWTR‑CODEs, and converting validated Excel sheets to long format.
-# The app now ENFORCES use of a GitHub‑hosted ATTRIBUTE.xlsx (users cannot upload their own).
-# ------------------------------------------------------------------------------
 
 import os, base64, json, re, io, requests, pandas as pd, streamlit as st
 from datetime import datetime
@@ -14,7 +9,7 @@ from openpyxl import load_workbook
 # 0)  CONFIGURATION
 # ----------------------------------------------------------------------------
 API_KEY = "AIzaSyDb8iBV1EWqLvjheG_44gh3vQHfpmYGOCI"
-# ⇩⇩  CHANGE TO YOUR RAW‑FILE URL
+
 GITHUB_ATTR_URL = (
     "https://raw.githubusercontent.com/kitkonss/extract/main/ATTRIBUTE.xlsx"
 )
@@ -117,7 +112,7 @@ def extract_data_from_image(api_key: str, img_b64: str, mime: str, prompt: str) 
                 ]
             }
         ],
-        "generationConfig": {"temperature": 0.2, "topP": 0.85, "maxOutputTokens": 9000},
+        "generationConfig": {"temperature": 0.2, "topP": 0.80, "maxOutputTokens": 9000},
     }
     r = requests.post(url, headers={"Content-Type": "application/json"}, data=json.dumps(payload))
     if r.ok and r.json().get("candidates"):
@@ -134,15 +129,42 @@ def extract_data_from_image(api_key: str, img_b64: str, mime: str, prompt: str) 
 
 PHASE_DIGIT = "3"  # assumption – three‑phase only
 
+def kv_numbers(text: str):
+    """
+    คืน list ค่าแรงดันเป็นหน่วย kV จากข้อความ
+    - จับ   230 kV   / 230kV
+    - จับ   230000 V / 23 000V  แล้ว /1000 → 230 kV
+    """
+    out = []
+    for m in re.finditer(r"(\d+(?:[.,]\d+)?)(\s*[kK]?[vV])", text):
+        num = float(m.group(1).replace(",", "."))
+        unit = m.group(2).strip().lower()
+        if unit == "v":            # เป็นโวลต์ → แปลงเป็น kV
+            num /= 1000.0
+        out.append(num)
+    return out
+# -----------------------------------------------------------------------
 
-def voltage_letter(kv_high: float) -> str:
-    if kv_high >= 345:
-        return "E"  # Extra high
-    if kv_high >= 100:
-        return "H"  # High
-    if kv_high >= 1:
-        return "M"  # Medium
-    return "L"      # Low
+def voltage_letter(kv_high: float | None) -> str:
+    """
+    E : 345–765 kV
+    H : 100–<345 kV
+    M :   1–<100 kV
+    L : 0.05–<1 kV
+    - : ไม่พบค่า
+    """
+    if kv_high is None:
+        return "-"
+    kv = float(kv_high)
+    if 345 <= kv <= 765:
+        return "E"
+    if 100 <= kv < 345:
+        return "H"
+    if   1 <= kv < 100:
+        return "M"
+    if 0.05 <= kv < 1:
+        return "L"
+    return "-"
 
 
 def type_letter(cooling: str) -> str:
@@ -160,28 +182,115 @@ def has_oltc(attributes: Dict) -> bool:
             return True
     return False
 
+def _classify_tap(text: str) -> str | None:
+    """คืน 'O' - On-load, 'F' - Off-load / Off-circuit, 'N' - No tap, หรือ None ถ้าไม่เจอ"""
+    txt = text.upper()
+
+    if re.search(r"\b(OLTC|ON[\s-]?LOAD)\b", txt):
+        return "O"
+
+    if re.search(r"\b(FLTC|OFF[\s-]*(LOAD|CIRCUIT))\b", txt):
+        return "F"
+
+    if re.search(r"\b(NTC|NO[\s-]?TAP)\b", txt):
+        return "N"
+
+    return None
+
+
+def tap_letter(attrs: dict) -> str:
+    """
+    เลือกตัวอักษร Tap-changer ตามลำดับความเชื่อมั่นของแหล่งข้อมูล
+        1) ช่อง 'USAGE TAP CHANGER'
+        2) ช่อง 'TYPE OF TRANSFORMER'
+        3) คำที่เหลือทั้งหมด
+    """
+    # 1️⃣  ดูคีย์ที่ชัด ๆ ก่อน
+    for k, v in attrs.items():
+        if "USAGE" in k.upper() and "TAP" in k.upper():
+            res = _classify_tap(str(v))
+            if res:
+                return res
+
+    # 2️⃣  รองลงมา-ช่องชนิดหม้อแปลง
+    for k, v in attrs.items():
+        if "TYPE" in k.upper() and "TRANSFORMER" in k.upper():
+            res = _classify_tap(str(v))
+            if res:
+                return res
+
+    # 3️⃣  สุดท้าย-กวาดข้อความทุกช่อง
+    all_text = " ".join(f"{k} {v}" for k, v in attrs.items())
+    res = _classify_tap(all_text)
+    if res:
+        return res
+
+    # 4️⃣  ไม่พบคำบ่งชี้ ⇒ N
+    return "N"
+
 
 def generate_powtr_code(attributes: Dict) -> str:
-    # 1) Phase digit (assumed 3)
-    part1 = PHASE_DIGIT
-    # 2) Voltage letter from HV (kV). Use attribute keys containing 'VOLTAGE' & 'HIGH'
+    part1 = PHASE_DIGIT               # (1) phase digit
+
+    # ---------- 2) หาแรงดันข้างสูง (kV) ----------
     kv_high = None
-    for k, v in attributes.items():
-        if re.search(r"HIGH.*VOLTAGE|VOLTAGE.*HIGH", k, re.I):
-            try:
-                kv_high = float(re.findall(r"[\d\.]+", str(v))[0])
-            except Exception:
-                pass
+
+    # helper ─ดึงตัวเลขที่ผูกกับหน่วย V/kV
+    def kv_numbers(text: str) -> list[float]:
+        out = []
+        for m in re.finditer(r"(\d+(?:[.,]\d+)?)(\s*[kK]?[vV])", text):
+            num = float(m.group(1).replace(",", "."))
+            unit = m.group(2).strip().lower()
+            if unit == "v":           # เป็นโวลต์ → แปลงเป็น kV
+                num /= 1000.0
+            out.append(num)
+        return out
+
+    raw_txts = [f"{k} {v}" for k, v in attributes.items()]          # รวม key+value
+
+    # 2-A : จับรูป “High: … kV / V”
+    for txt in raw_txts:
+        m = re.search(r"[Hh]igh[^0-9]{0,10}(\d+(?:[.,]\d+)?)(\s*[kK]?[vV])", txt)
+        if m:
+            num = float(m.group(1).replace(",", "."))
+            if m.group(2).strip().lower() == "v":
+                num /= 1000.0
+            kv_high = num
             break
+
+    # 2-B : ถ้ายังไม่ได้ ดูรูป “HV: … kV / V”
     if kv_high is None:
-        kv_high = 0
-    part2 = voltage_letter(kv_high)
-    # 3) Type letter from cooling/insulation key
+        for txt in raw_txts:
+            m = re.search(r"\bH[Vv][^\d]{0,10}(\d+(?:[.,]\d+)?)(\s*[kK]?[vV])", txt)
+            if m:
+                num = float(m.group(1).replace(",", "."))
+                if m.group(2).strip().lower() == "v":
+                    num /= 1000.0
+                kv_high = num
+                break
+
+    # 2-C : สแกนทุก field เอาเฉพาะค่าระหว่าง 0.05–765 kV แล้วเลือกมากสุด
+    if kv_high is None:
+        kvs = []
+        for txt in raw_txts:
+            kvs += kv_numbers(txt)
+        kvs = [x for x in kvs if 0.05 <= x <= 765]
+        if kvs:
+            kv_high = max(kvs)
+    # -----------------------------------------------
+
+
+    part2 = voltage_letter(kv_high)   # ได้ '-' ถ้าไม่พบ
+
+    # (3) cooling / insulation ⇒ type letter
     cooling = attributes.get("TYPE", "") or attributes.get("INSULATION", "")
     part3 = type_letter(cooling)
-    # 4) Tap‑changer letter
-    part4 = "O" if has_oltc(attributes) else "F"
+    
+    part4 = tap_letter(attributes)
+
     return f"POWTR-{part1}{part2}{part3}{part4}"
+# -----------------------------------------------------------------------
+# ------------------------------------------------------------------------
 
 
 def add_powtr_codes(results: List[Dict]) -> List[Dict]:
@@ -225,22 +334,22 @@ def process_excel(df: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------------------------------------------------------
 
 st.set_page_config(page_title="Transformer Extractor", layout="wide")
+st.header("🔎 สกัดข้อมูลจากรูปภาพ")
 
 
 tab1, tab2, tab3 = st.tabs([
-    "สกัดจากรูปภาพ", "ประมวลผลจาก validated", "🔎 ตรวจสอบ POWTR-CODE"
+    "สกัดจากรูปภาพ", "ตรวจสอบ POWTR-CODE", "ประมวลผลจาก validated"
 ])
 
 # ---- TAB 1 -----------------------------------------------------------------
 with tab1:
-    st.subheader("💡 สกัดข้อมูลจากรูปภาพ")
     images = st.file_uploader(
         "1. อัปโหลดรูปภาพ (รองรับหลายไฟล์)", ["jpg", "jpeg", "png"], True, key="img_upl"
     )
     if st.button("ประมวลผลภาพ") and images:
         attr_buf = fetch_attributes_from_github()
         prompt = generate_prompt_from_excel(attr_buf)
-        st.expander("Prompt ที่ใช้กับ Gemini").write(prompt)
+        # st.expander("Prompt ที่ใช้กับ Gemini").write(prompt)
 
         results = []
         prog = st.progress(0.0)
@@ -278,8 +387,8 @@ with tab1:
         st.download_button("ดาวน์โหลด Excel", buf, "extracted_long.xlsx")
 
 # ---- TAB 2 -----------------------------------------------------------------
-with tab2:
-    st.header("🔍 ประมวลผลไฟล์ validated"); st.caption("ใช้ ATTRIBUTE.xlsx จาก GitHub โดยอัตโนมัติ")
+with tab3:
+    st.subheader("ประมวลผลไฟล์ validated"); 
     validated_file = st.file_uploader("เลือกไฟล์ validated_powtr_codes.xlsx", ["xlsx"], key="val_upl")
     if st.button("ประมวลผล validated") and validated_file:
         df_val = pd.read_excel(validated_file)
@@ -315,8 +424,8 @@ with tab2:
         st.download_button("ดาวน์โหลด", buf, "extracted_long_from_validated.xlsx")
 
 # ---- TAB 3 -----------------------------------------------------------------
-with tab3:
-    st.header("🔎 POWTR‑CODE Validator (British spelling)")
+with tab2:
+    st.subheader("POWTR‑CODE Validator")
     upl = st.file_uploader("อัปโหลด Excel เพื่อตรวจสอบ", ["xlsx", "xls"], key="chk_upl")
     if upl:
         df_in = pd.read_excel(upl)
