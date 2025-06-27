@@ -100,7 +100,7 @@ def generate_prompt_from_excel(excel_file: io.BytesIO) -> str:
 def extract_data_from_image(api_key: str, img_b64: str, mime: str, prompt: str) -> Dict:
     """Return JSON dict (or {'error': ..}) from Gemini Vision API."""
     endpoint = (
-        "https://generativelanguage.googleapis.com/v1beta/models/" "gemini-2.5-flash-preview-05-20:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta/models/" "gemini-2.5-flash:generateContent"
     )
     url = f"{endpoint}?key={api_key}"
     payload = {
